@@ -455,6 +455,14 @@ tr:hover td { background: #f8fafc; }
 /* ═══════════════════ VIDEO EMBED & PROTECTION ═══════════════════ */
 .video-embed-wrap { border-radius: 10px; overflow: hidden; background: #000; aspect-ratio: 16/9; width: 100%; position: relative; }
 .video-embed-wrap iframe { width: 100%; height: 100%; display: block; border: none; }
+.yt-player-crop { width: 100%; height: 100%; overflow: hidden; position: relative; background: #000; }
+.yt-player-crop #yt-player-div,
+.yt-player-crop #yt-player-container { width: 100%; height: 100%; position: relative; }
+.yt-player-crop iframe {
+  position: absolute !important; top: 50% !important; left: 50% !important;
+  width: 300% !important; height: 300% !important; max-width: none !important;
+  transform: translate(-50%, -50%); pointer-events: none !important; border: none !important;
+}
 .video-embed-wrap video::-webkit-media-controls-download-button { display: none !important; }
 .video-embed-wrap video::-webkit-media-controls-overflow-button { display: none !important; }
 .video-protect-overlay { position: absolute; inset: 0; z-index: 5; background: transparent; cursor: default; }
@@ -1119,7 +1127,8 @@ tr:hover td { background: #f8fafc; }
 <script>
 // ═══════════════════ DATA ═══════════════════
 let students = [];
-let videos = [];
+let allVideos = []; // كل بيانات الفيديو (للتشغيل والإدارة)
+let videos = [];    // نسخة آمنة للعرض (بدون رابط للطالب)
 let currentAdmin = false;
 let currentStudentIdx = -1;
 let screenRecordAttempts = {};
@@ -1177,7 +1186,8 @@ function initFirebaseListeners() {
     return;
   }
   unsubscribeVideos = db.collection('videos').orderBy('createdAt', 'desc').onSnapshot(snapshot => {
-    videos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    allVideos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    refreshVideosForRole();
     syncUi();
   }, err => console.error('videos listener failed:', err));
 
@@ -1228,6 +1238,7 @@ function doLogin() {
   err.classList.add('hidden');
   if (u === 'admin1' && p === 'admin2') {
     currentAdmin = true;
+    refreshVideosForRole();
     document.getElementById('login-screen').classList.add('hidden');
     document.getElementById('admin-screen').classList.remove('hidden');
     renderStudents(); updateStats(); renderVideos();
@@ -1236,6 +1247,8 @@ function doLogin() {
   const idx = students.findIndex(s => s.user === u && s.pass === p);
   if (idx >= 0) {
     const st = students[idx];
+    currentAdmin = false;
+    refreshVideosForRole();
     currentStudentIdx = idx;
     document.getElementById('login-screen').classList.add('hidden');
     document.getElementById('student-screen').classList.remove('hidden');
@@ -1257,8 +1270,18 @@ function logout() {
   document.getElementById('login-user').value = '';
   document.getElementById('login-pass').value = '';
   document.getElementById('login-error').classList.add('hidden');
+  currentAdmin = false;
   currentStudentIdx = -1;
+  refreshVideosForRole();
   closeSidebar();
+}
+
+function publicVideoMeta(v) {
+  return { id: v.id, title: v.title, duration: v.duration, isLocal: !!v.isLocal };
+}
+
+function refreshVideosForRole() {
+  videos = currentAdmin ? allVideos.slice() : allVideos.map(publicVideoMeta);
 }
 
 // ═══════════════════ ADMIN NAV ═══════════════════
@@ -1507,6 +1530,9 @@ async function addVideo() {
   } else {
     url = document.getElementById('vid-url').value.trim();
     if (!url) { err.textContent = 'يرجى إدخال رابط الفيديو'; err.classList.remove('hidden'); return; }
+    const ytId = extractYouTubeId(url);
+    if (!ytId) { err.textContent = 'يرجى إدخال رابط YouTube صحيح'; err.classList.remove('hidden'); return; }
+    url = encUrl(ytId);
   }
   if (!title) { err.textContent = 'يرجى إدخال عنوان الفيديو'; err.classList.remove('hidden'); return; }
   await db.collection('videos').add({
@@ -1613,7 +1639,7 @@ function renderStudentVideos() {
 function watchVideo(videoId) {
   const si = currentStudentIdx;
   const s = students[si];
-  const v = videos.find(x => x.id === videoId);
+  const v = allVideos.find(x => x.id === videoId);
   if (!v) return;
   if (!s.videoViews) s.videoViews = {};
   const remaining = s.videoViews[videoId] !== undefined ? s.videoViews[videoId] : 0;
@@ -1624,19 +1650,37 @@ function watchVideo(videoId) {
     db.collection('students').doc(s.id).update({ ['videoViews.' + videoId]: s.videoViews[videoId] });
   }
 
-  const realUrl = v.isLocal ? v.url : decUrl(v.url);
-  const embedUrl = v.isLocal ? null : getEmbedUrl(realUrl);
+  if (ytPlayer && ytPlayer.destroy) { try { ytPlayer.destroy(); } catch(e) {} ytPlayer = null; }
+
+  const protectLayers = buildWatchProtectLayers();
   document.getElementById('watch-title').textContent = v.title;
+  const embed = document.getElementById('watch-embed');
+  const controls = document.getElementById('vid-controls-overlay');
 
   if (v.isLocal) {
-    document.getElementById('watch-embed').innerHTML =
-      `<video id="local-video-player" src="${escapeAttr(realUrl)}" autoplay playsinline controls style="width:100%;height:100%;border-radius:10px;background:#000;display:block;"></video>`;
-  } else if (embedUrl) {
-    document.getElementById('watch-embed').innerHTML =
-      `<iframe src="${escapeAttr(embedUrl)}" title="${escapeAttr(v.title || 'Video')}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" style="width:100%;height:100%;border:0;border-radius:10px;background:#000;display:block;"></iframe>`;
+    const realUrl = v.url;
+    embed.innerHTML =
+      `<video id="local-video-player" src="${escapeAttr(realUrl)}" autoplay playsinline controlsList="nodownload nofullscreen" disablePictureInPicture style="width:100%;height:100%;border-radius:10px;background:#000;display:block;"></video>${protectLayers}`;
+    controls.style.display = '';
+    bindLocalVideoControlEvents();
   } else {
-    document.getElementById('watch-embed').innerHTML =
-      `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#1e293b;border-radius:10px;flex-direction:column;gap:12px;"><i class="ti ti-link" style="font-size:36px;color:rgba(255,255,255,0.4)"></i><p style="color:rgba(255,255,255,0.6);font-size:14px;">رابط الفيديو غير صحيح</p></div>`;
+    const ytId = getYouTubeIdFromVideo(v);
+    if (ytId) {
+      embed.innerHTML = `<div id="yt-player-container" class="yt-player-crop"></div>${protectLayers}`;
+      controls.style.display = '';
+      initYTPlayer(ytId);
+    } else {
+      const vimeoEmbed = getVimeoEmbedUrl(getPlayableUrl(v));
+      if (vimeoEmbed) {
+        embed.innerHTML =
+          `<iframe src="${escapeAttr(vimeoEmbed)}" title="${escapeAttr(v.title || 'Video')}" allow="autoplay; encrypted-media; picture-in-picture" style="width:100%;height:100%;border:0;border-radius:10px;background:#000;display:block;pointer-events:none;"></iframe>${protectLayers}`;
+        controls.style.display = 'none';
+      } else {
+        embed.innerHTML =
+          `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#1e293b;border-radius:10px;flex-direction:column;gap:12px;"><i class="ti ti-link" style="font-size:36px;color:rgba(255,255,255,0.4)"></i><p style="color:rgba(255,255,255,0.6);font-size:14px;">رابط الفيديو غير صحيح</p></div>`;
+        controls.style.display = 'none';
+      }
+    }
   }
 
   const newRem = s.videoViews[videoId];
@@ -1648,15 +1692,53 @@ function watchVideo(videoId) {
   renderStudentVideos();
 }
 
-function getEmbedUrl(url) {
-  if (!url) return null;
-  const ytMatch = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|live\/)|youtu\.be\/)([^&\s?]+)/);
-  if (ytMatch) return `https://www.youtube.com/embed/${ytMatch[1]}?autoplay=1&rel=0`;
-  if (url.includes('youtube.com/embed/')) return url.includes('?') ? `${url}&autoplay=1&rel=0` : `${url}?autoplay=1&rel=0`;
-  const vmMatch = url.match(/vimeo\.com\/(\d+)/);
-  if (vmMatch) return `https://player.vimeo.com/video/${vmMatch[1]}?autoplay=1&title=0&byline=0&portrait=0`;
-  if (url.match(/\.(mp4|webm|ogg)$/i)) return null;
+function getPlayableUrl(v) {
+  if (!v || v.isLocal || !v.url) return '';
+  if (/^https?:\/\//i.test(v.url)) return v.url;
+  return decUrl(v.url);
+}
+
+function getYouTubeIdFromVideo(v) {
+  if (!v || v.isLocal || !v.url) return null;
+  const raw = getPlayableUrl(v);
+  if (!raw) return null;
+  const fromLink = extractYouTubeId(raw);
+  if (fromLink) return fromLink;
+  if (/^[a-zA-Z0-9_-]{11}$/.test(raw)) return raw;
   return null;
+}
+
+function extractYouTubeId(url) {
+  if (!url) return null;
+  const ytMatch = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([^&\s?/]+)/);
+  return ytMatch ? ytMatch[1] : null;
+}
+
+function getVimeoEmbedUrl(url) {
+  if (!url) return null;
+  const vmMatch = url.match(/vimeo\.com\/(\d+)/);
+  if (!vmMatch) return null;
+  return `https://player.vimeo.com/video/${vmMatch[1]}?autoplay=1&title=0&byline=0&portrait=0`;
+}
+
+function buildWatchProtectLayers() {
+  const name = escapeHtml(students[currentStudentIdx]?.name || 'Learnix');
+  return `<div class="video-protect-overlay"></div>
+    <div class="video-watermark"><span class="video-watermark-text">${name} · Learnix</span></div>`;
+}
+
+function bindLocalVideoControlEvents() {
+  const vid = getLocalVideo();
+  if (!vid) return;
+  const syncPlayIcon = () => {
+    const icon = document.getElementById('ctrl-play-icon');
+    if (!icon) return;
+    icon.className = vid.paused || vid.ended ? 'ti ti-player-play' : 'ti ti-player-pause';
+  };
+  vid.onplay = syncPlayIcon;
+  vid.onpause = syncPlayIcon;
+  vid.onended = syncPlayIcon;
+  syncPlayIcon();
 }
 
 // ═══════════════════ VIDEO CONTROLS ═══════════════════
@@ -1685,17 +1767,21 @@ function initYTPlayer(videoId) {
   const doCreate = () => {
     ytPlayer = new YT.Player('yt-player-div', {
       videoId: videoId,
+      host: 'https://www.youtube-nocookie.com',
       playerVars: {
-        autoplay: 1, rel: 0, modestbranding: 1,
-        iv_load_policy: 3, color: 'white',
-        controls: 0, disablekb: 1,
+        autoplay: 1, rel: 0, modestbranding: 1, showinfo: 0,
+        iv_load_policy: 3, cc_load_policy: 3, color: 'white',
+        controls: 0, disablekb: 1, fs: 0, playsinline: 1,
+        origin: window.location.origin, enablejsapi: 1,
       },
       width: '100%', height: '100%',
       events: {
         onReady: (e) => {
           e.target.playVideo();
-          document.getElementById('ctrl-play-icon').className = 'ti ti-player-pause';
-          document.getElementById('ctrl-volume').value = e.target.getVolume() / 100;
+          const icon = document.getElementById('ctrl-play-icon');
+          if (icon) icon.className = 'ti ti-player-pause';
+          const vol = document.getElementById('ctrl-volume');
+          if (vol) vol.value = e.target.getVolume() / 100;
         },
         onStateChange: (e) => {
           const icon = document.getElementById('ctrl-play-icon');
@@ -1708,14 +1794,11 @@ function initYTPlayer(videoId) {
         }
       }
     });
-    // اعمل الـ iframe يملأ الـ container
     setTimeout(() => {
       const iframe = container.querySelector('iframe');
       if (iframe) {
-        iframe.style.width = '100%';
-        iframe.style.height = '100%';
-        iframe.style.border = 'none';
-        iframe.style.display = 'block';
+        iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+        iframe.removeAttribute('allowfullscreen');
       }
     }, 500);
   };
@@ -1963,9 +2046,9 @@ document.addEventListener('visibilitychange', () => {
 function closeModal(id) {
   document.getElementById(id).classList.add('hidden');
   if (id === 'watch-modal') {
-    // دمر الـ YouTube player لو موجود
     if (ytPlayer && ytPlayer.destroy) { try { ytPlayer.destroy(); } catch(e) {} ytPlayer = null; }
     document.getElementById('watch-embed').innerHTML = '';
+    document.getElementById('vid-controls-overlay').style.display = 'none';
     document.getElementById('screen-record-warning').style.display = 'none';
     document.getElementById('ctrl-play-icon').className = 'ti ti-player-play';
     document.getElementById('ctrl-fs-icon').className   = 'ti ti-maximize';
@@ -2017,7 +2100,7 @@ document.addEventListener('dragstart', function(e) {
     if (isOpen && !devOpen && modalOpen) {
       devOpen = true;
       const vid = document.getElementById('local-video-player'); if (vid) vid.pause();
-      const iframe = document.getElementById('yt-iframe'); if (iframe) iframe.src = '';
+      if (ytPlayer && ytPlayer.destroy) { try { ytPlayer.destroy(); } catch(e) {} ytPlayer = null; }
       closeModal('watch-modal');
     } else if (!isOpen) { devOpen = false; }
   }, 1000);
