@@ -4,5 +4,9 @@
   },
   "database": {
     "rules": "database.rules.json"
+  },
+  "hosting": {
+    "public": ".",
+    "ignore": ["firebase.json", "firestore.rules", "database.rules.json", "**/.*", "**/node_modules/**"]
   }
 }

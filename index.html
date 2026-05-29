@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <title>Learnix</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -455,13 +456,17 @@ tr:hover td { background: #f8fafc; }
 /* ═══════════════════ VIDEO EMBED & PROTECTION ═══════════════════ */
 .video-embed-wrap { border-radius: 10px; overflow: hidden; background: #000; aspect-ratio: 16/9; width: 100%; position: relative; }
 .video-embed-wrap iframe { width: 100%; height: 100%; display: block; border: none; }
-.yt-player-crop { width: 100%; height: 100%; overflow: hidden; position: relative; background: #000; }
-.yt-player-crop #yt-player-div,
-.yt-player-crop #yt-player-container { width: 100%; height: 100%; position: relative; }
-.yt-player-crop iframe {
-  position: absolute !important; top: 50% !important; left: 50% !important;
-  width: 300% !important; height: 300% !important; max-width: none !important;
-  transform: translate(-50%, -50%); pointer-events: none !important; border: none !important;
+.yt-player-wrap { width: 100%; height: 100%; position: relative; background: #000; overflow: hidden; }
+.yt-player-wrap #yt-player-div { width: 100%; height: 100%; position: absolute; inset: 0; }
+.yt-player-wrap iframe {
+  position: absolute !important; inset: 0 !important;
+  width: 100% !important; height: 100% !important;
+  border: none !important; pointer-events: none !important;
+}
+/* يخفي شريط يوتيوب السفلي بدون قص الفيديو */
+.yt-player-wrap::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 56px;
+  background: linear-gradient(transparent, #000 70%); z-index: 4; pointer-events: none;
 }
 .video-embed-wrap video::-webkit-media-controls-download-button { display: none !important; }
 .video-embed-wrap video::-webkit-media-controls-overflow-button { display: none !important; }
@@ -1666,9 +1671,14 @@ function watchVideo(videoId) {
   } else {
     const ytId = getYouTubeIdFromVideo(v);
     if (ytId) {
-      embed.innerHTML = `<div id="yt-player-container" class="yt-player-crop"></div>${protectLayers}`;
-      controls.style.display = '';
-      initYTPlayer(ytId);
+      if (location.protocol === 'file:') {
+        embed.innerHTML = buildFileProtocolMessage() + protectLayers;
+        controls.style.display = 'none';
+      } else {
+        embed.innerHTML = `<div id="yt-player-container" class="yt-player-wrap"></div>${protectLayers}`;
+        controls.style.display = '';
+        initYTPlayer(ytId);
+      }
     } else {
       const vimeoEmbed = getVimeoEmbedUrl(getPlayableUrl(v));
       if (vimeoEmbed) {
@@ -1727,6 +1737,30 @@ function buildWatchProtectLayers() {
     <div class="video-watermark"><span class="video-watermark-text">${name} · Learnix</span></div>`;
 }
 
+function buildFileProtocolMessage() {
+  return `<div style="width:100%;min-height:280px;display:flex;align-items:center;justify-content:center;background:#0f172a;border-radius:10px;padding:28px 24px;text-align:center;flex-direction:column;gap:14px;">
+    <i class="ti ti-world" style="font-size:42px;color:#60a5fa;"></i>
+    <div style="font-size:16px;font-weight:800;color:#f8fafc;">افتح المنصة من الرابط الرسمي</div>
+    <p style="font-size:13px;color:#94a3b8;line-height:1.7;max-width:420px;">تشغيل الفيديو لا يعمل من ملف محلي. ادخل على موقع Learnix المنشور على الإنترنت (رابط https) من المدير.</p>
+  </div>`;
+}
+
+function getYTPlayerOrigin() {
+  if (location.protocol === 'http:' || location.protocol === 'https:') return window.location.origin;
+  return null;
+}
+
+function buildYTPlayerVars() {
+  const vars = {
+    autoplay: 1, rel: 0, modestbranding: 1,
+    iv_load_policy: 3, cc_load_policy: 3,
+    controls: 0, disablekb: 1, fs: 0, playsinline: 1, enablejsapi: 1,
+  };
+  const origin = getYTPlayerOrigin();
+  if (origin) vars.origin = origin;
+  return vars;
+}
+
 function bindLocalVideoControlEvents() {
   const vid = getLocalVideo();
   if (!vid) return;
@@ -1767,13 +1801,7 @@ function initYTPlayer(videoId) {
   const doCreate = () => {
     ytPlayer = new YT.Player('yt-player-div', {
       videoId: videoId,
-      host: 'https://www.youtube-nocookie.com',
-      playerVars: {
-        autoplay: 1, rel: 0, modestbranding: 1, showinfo: 0,
-        iv_load_policy: 3, cc_load_policy: 3, color: 'white',
-        controls: 0, disablekb: 1, fs: 0, playsinline: 1,
-        origin: window.location.origin, enablejsapi: 1,
-      },
+      playerVars: buildYTPlayerVars(),
       width: '100%', height: '100%',
       events: {
         onReady: (e) => {
@@ -1782,6 +1810,7 @@ function initYTPlayer(videoId) {
           if (icon) icon.className = 'ti ti-player-pause';
           const vol = document.getElementById('ctrl-volume');
           if (vol) vol.value = e.target.getVolume() / 100;
+          applyYTIframeAttrs(container);
         },
         onStateChange: (e) => {
           const icon = document.getElementById('ctrl-play-icon');
@@ -1791,16 +1820,13 @@ function initYTPlayer(videoId) {
           } else if (e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.ENDED) {
             icon.className = 'ti ti-player-play';
           }
+        },
+        onError: () => {
+          initYTPlayerEmbedFallback(videoId);
         }
       }
     });
-    setTimeout(() => {
-      const iframe = container.querySelector('iframe');
-      if (iframe) {
-        iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
-        iframe.removeAttribute('allowfullscreen');
-      }
-    }, 500);
+    setTimeout(() => applyYTIframeAttrs(container), 500);
   };
 
   if (window.YT && window.YT.Player) {
@@ -1813,6 +1839,30 @@ function initYTPlayer(videoId) {
       doCreate();
     };
   }
+}
+
+function applyYTIframeAttrs(container) {
+  const iframe = container && container.querySelector('iframe');
+  if (!iframe) return;
+  iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+  iframe.setAttribute('title', 'Learnix Video');
+}
+
+function initYTPlayerEmbedFallback(videoId) {
+  if (ytPlayer && ytPlayer.destroy) { try { ytPlayer.destroy(); } catch(e) {} ytPlayer = null; }
+  const container = document.getElementById('yt-player-container');
+  if (!container) return;
+  const params = new URLSearchParams({
+    autoplay: '1', rel: '0', modestbranding: '1', controls: '0',
+    disablekb: '1', fs: '0', playsinline: '1', iv_load_policy: '3', enablejsapi: '1',
+  });
+  const origin = getYTPlayerOrigin();
+  if (origin) params.set('origin', origin);
+  const src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}?${params}`;
+  container.innerHTML =
+    `<iframe src="${escapeAttr(src)}" referrerpolicy="strict-origin-when-cross-origin" title="Learnix Video" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" style="position:absolute;inset:0;width:100%;height:100%;border:0;pointer-events:none;"></iframe>`;
+  const controls = document.getElementById('vid-controls-overlay');
+  if (controls) controls.style.display = 'none';
 }
 
 function getLocalVideo() { return document.getElementById('local-video-player'); }
